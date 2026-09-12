@@ -67,6 +67,26 @@ def scan(
     custom_payloads: Optional[str] = typer.Option(
         None, "--custom-payloads", help="Path to custom payloads file (one per line)"
     ),
+    csrf_extract: bool = typer.Option(
+        False,
+        "--csrf-extract",
+        is_flag=True,
+        help=(
+            "After confirmed XSS, attach a stage-2 payload that extracts CSRF tokens "
+            "and cookies via fetch() to --callback-host"
+        ),
+    ),
+    callback_host: Optional[str] = typer.Option(
+        None,
+        "--callback-host",
+        help="Callback host for CSRF extraction and blind XSS exfiltration (e.g. abc.oast.fun)",
+    ),
+    stored: Optional[str] = typer.Option(
+        None,
+        "--stored",
+        help="YAML file defining stored XSS write/read/delay probe configs",
+        metavar="YAML_FILE",
+    ),
 ):
     simple_scan.simple_scan_wrapper(
         target,
@@ -81,6 +101,9 @@ def scan(
         pool_cap,
         max_payloads,
         custom_payloads,
+        csrf_extract=csrf_extract,
+        callback_host=callback_host,
+        stored=stored,
     )
 
 

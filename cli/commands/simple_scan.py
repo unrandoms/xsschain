@@ -43,6 +43,9 @@ async def simple_scan(
     pool_cap: int = 10000,
     max_payloads: int = 500,
     custom_payloads: Optional[str] = None,
+    csrf_extract: bool = False,
+    callback_host: Optional[str] = None,
+    stored: Optional[str] = None,
 ):
     """Scan target for XSS vulnerabilities - specify domain or IP only"""
 
@@ -158,6 +161,77 @@ async def simple_scan(
             finally:
                 # Ensure the shared HTTP client is closed
                 await http_client.close()
+
+        # -----------------------------------------------------------------------
+        # CSP bypass analysis + CSRF extraction for each confirmed finding
+        # -----------------------------------------------------------------------
+        if all_vulnerabilities:
+            from brsxss.detect.xss.reflected.csp_bypass_selector import CSPBypassSelector
+
+            csp_selector = CSPBypassSelector()
+
+            for finding in all_vulnerabilities:
+                response_headers = finding.get("response_headers", {})
+                csp_selector.analyse(response_headers, finding_metadata=finding)
+
+                if csrf_extract:
+                    effective_callback = callback_host or blind_xss_webhook
+                    if effective_callback:
+                        from brsxss.detect.xss.reflected.csrf_extractor import (
+                            attach_csrf_payload_to_finding,
+                        )
+
+                        attach_csrf_payload_to_finding(finding, effective_callback)
+                    else:
+                        logger.warning(
+                            "--csrf-extract requires --callback-host or --blind-xss-webhook"
+                        )
+
+        # -----------------------------------------------------------------------
+        # Stored XSS probing (--stored YAML_FILE)
+        # -----------------------------------------------------------------------
+        if stored:
+            try:
+                from brsxss.detect.xss.stored.prober import StoredXSSProber
+
+                console.print(f"[cyan]Stored XSS probing with config: {stored}[/cyan]")
+                prober = StoredXSSProber(yaml_path=stored, timeout=timeout, verify_ssl=not no_ssl_verify)
+
+                # Collect a representative set of payloads for injection
+                stored_payloads: list[str] = ["<script>alert(1)</script>"]
+                for finding in all_vulnerabilities:
+                    ep = finding.get("evidence_payloads", [])
+                    stored_payloads.extend(ep[:3])
+                    pl = finding.get("payload")
+                    if pl:
+                        stored_payloads.append(pl)
+
+                # Deduplicate while preserving order
+                seen_pl: set[str] = set()
+                unique_stored: list[str] = []
+                for pl in stored_payloads:
+                    if pl and pl not in seen_pl:
+                        unique_stored.append(pl)
+                        seen_pl.add(pl)
+
+                stored_findings = await prober.run(unique_stored)
+                if stored_findings:
+                    console.print(
+                        f"[red bold]Stored XSS: {len(stored_findings)} finding(s) confirmed![/red bold]"
+                    )
+                    for sf in stored_findings:
+                        sf_dict = sf.to_dict()
+                        all_vulnerabilities.append(sf_dict)
+                        console.print(
+                            f"  [red]• [{sf.severity.upper()}] write={sf.write_url} read={sf.read_url}[/red]"
+                        )
+                else:
+                    console.print("[green]Stored XSS probing: no stored execution detected[/green]")
+
+            except FileNotFoundError as fnf_err:
+                console.print(f"[red]--stored: {fnf_err}[/red]")
+            except Exception as stored_err:
+                logger.error("Stored XSS probing failed: %s", stored_err)
 
         # Display results in a rich table
         console.print("\n[bold]Scan Summary[/bold]")
@@ -578,6 +652,9 @@ def simple_scan_wrapper(
     pool_cap: int = 10000,
     max_payloads: int = 500,
     custom_payloads: Optional[str] = None,
+    csrf_extract: bool = False,
+    callback_host: Optional[str] = None,
+    stored: Optional[str] = None,
 ):
     """Wrapper to run async scan function"""
     return asyncio.run(
@@ -594,6 +671,9 @@ def simple_scan_wrapper(
             pool_cap,
             max_payloads,
             custom_payloads,
+            csrf_extract=csrf_extract,
+            callback_host=callback_host,
+            stored=stored,
         )
     )
 
